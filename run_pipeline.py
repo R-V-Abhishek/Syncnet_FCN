@@ -2,6 +2,7 @@
 
 import sys, time, os, pdb, argparse, pickle, subprocess, glob, cv2
 import numpy as np
+import torch
 from shutil import rmtree
 
 import scenedetect
@@ -184,7 +185,8 @@ def crop_video(opt,track,cropfile):
 
 def inference_video(opt):
 
-  DET = S3FD(device='cuda')
+  device = 'cuda' if torch.cuda.is_available() else 'cpu'
+  DET = S3FD(device=device)
 
   flist = glob.glob(os.path.join(opt.frames_dir,opt.reference,'*.jpg'))
   flist.sort()
@@ -232,9 +234,13 @@ def scene_detect(opt):
 
   video_manager.start()
 
-  scene_manager.detect_scenes(frame_source=video_manager)
-
-  scene_list = scene_manager.get_scene_list(base_timecode)
+  try:
+    scene_manager.detect_scenes(frame_source=video_manager)
+    scene_list = scene_manager.get_scene_list(base_timecode)
+  except TypeError as e:
+    # Handle OpenCV/scenedetect compatibility issue
+    print(f'Scene detection failed ({e}), treating entire video as single scene')
+    scene_list = []
 
   savepath = os.path.join(opt.work_dir,opt.reference,'scene.pckl')
 

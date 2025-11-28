@@ -36,61 +36,38 @@ Audio-Visual Sync Detection using Fully Convolutional Networks (FCN) based on Sy
    - Added model file extensions
    - Added temporary file patterns
 
-4. **Verified Git Repository Status**
-   - Confirmed no unwanted files are being tracked
-   - All tracked files are appropriate source code and documentation
+4. **Created Test Videos with Controlled Offsets**
+   - Created `test_videos/` folder with 6 test videos
+   - Used FFmpeg `adelay` filter to introduce precise audio delays
+   - Used FFmpeg `atrim` filter to create audio-ahead scenarios
+   - Test videos cover range from -400ms to +600ms offset
 
----
+5. **Validated SyncNet Model Accuracy**
+   - Ran comprehensive tests on all offset videos
+   - Model correctly detects relative offsets within ±1 frame accuracy
+   - All tests passed with high confidence scores
 
-## File Modifications Summary
+#### Test Results Summary
 
-| File | Changes |
-|------|---------|
-| `SyncNetInstance.py` | Added device auto-detection, replaced `.cuda()` with `.to(self.device)` |
-| `SyncNetInstance_FCN.py` | Added device auto-detection, replaced `.cuda()` with `.to(self.device)`, fixed `map_location` |
-| `.gitignore` | Updated with comprehensive ignore patterns |
+| Video | Introduced Offset | Detected Offset | Min Dist | Confidence | Status |
+|-------|-------------------|-----------------|----------|------------|--------|
+| `original.avi` | 0 (baseline ~3) | **3** | 5.358 | 10.081 | ✅ Baseline |
+| `audio_delay_200ms.avi` | +5 frames | **-2** | 6.790 | 8.272 | ✅ Pass |
+| `audio_delay_400ms.avi` | +10 frames | **-7** | 6.852 | 8.082 | ✅ Pass |
+| `audio_delay_600ms.avi` | +15 frames | **-12** | 6.936 | 8.936 | ✅ Pass |
+| `audio_ahead_200ms.avi` | -5 frames | **8** | 6.810 | 8.200 | ✅ Pass |
+| `audio_ahead_400ms.avi` | -10 frames | **13** | 6.889 | 8.947 | ✅ Pass |
 
----
-
-## Test Results
-
-### Demo SyncNet Output (example.avi)
-```
-Model data/syncnet_v2.model loaded.
-Compute time 2.902 sec.
-AV offset:      3 
-Min dist:       5.358
-Confidence:     10.081
-```
-
-### Interpretation
-- Video has good lip-sync quality (min_dist < 7)
-- Small sync offset detected (3 frames = ~120ms)
-- High confidence in detection (>10)
+**Note:** Detected offsets are relative to baseline (3). Model correctly identifies:
+- Audio delay → negative offset shift
+- Audio ahead → positive offset shift
 
 ---
 
 ## Next Steps
 
-- [ ] Test FCN SyncNet model (`SyncNetInstance_FCN.py`)
-- [ ] Train custom FCN model if needed
-- [ ] Evaluate on additional test videos
-- [ ] Compare original vs FCN model performance
-- [ ] Document final results and findings
+- [ ] Test FCN model variant (`SyncNetInstance_FCN.py`)
+- [ ] Compare FCN vs original model performance
+- [ ] Test with different video types (interviews, presentations)
+- [ ] Document findings for supervisor meeting
 
----
-
-## Environment
-
-- **OS**: Windows
-- **Python**: Virtual environment (`venv/`)
-- **PyTorch**: CPU version (no CUDA)
-- **FFmpeg**: v8.0.1 (installed and working)
-
----
-
-## Repository Info
-
-- **Repository**: Syncnet_FCN
-- **Owner**: R-V-Abhishek
-- **Branch**: master
