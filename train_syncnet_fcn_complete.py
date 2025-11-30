@@ -54,41 +54,45 @@ class VoxCeleb2Dataset(Dataset):
         # Create unique temp audio file
         video_id = os.path.splitext(os.path.basename(video_path))[0]
         audio_path = os.path.join(self.temp_dir, f'{video_id}_audio.wav')
-        
         try:
             # Extract audio using FFmpeg
             cmd = ['ffmpeg', '-y', '-i', video_path, '-ac', '1', '-ar', '16000',
                    '-vn', '-acodec', 'pcm_s16le', audio_path]
-            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, 
-                                   timeout=30)
-            
+            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
             if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg failed for {video_path}")
-            
+                raise RuntimeError(f"FFmpeg failed for {video_path}: {result.stderr.decode(errors='ignore')}")
             # Read audio and compute MFCC
-            audio_data = wavfile.read(audio_path)
-            # Handle both (sample_rate, audio) and other return formats
-            if len(audio_data) == 2:
-                sample_rate, audio = audio_data
-            else:
-                raise ValueError(f"Unexpected wavfile.read output: {len(audio_data)} values")
-            
+            try:
+                sample_rate, audio = wavfile.read(audio_path)
+            except Exception as e:
+                raise RuntimeError(f"wavfile.read failed for {audio_path}: {e}")
             # Ensure audio is 1D
-            if len(audio.shape) > 1:
+            if isinstance(audio, np.ndarray) and len(audio.shape) > 1:
                 audio = audio.mean(axis=1)
-            
-            mfcc = python_speech_features.mfcc(audio, sample_rate, numcep=13)
-            
+            # Check for empty or invalid audio
+            if not isinstance(audio, np.ndarray) or audio.size == 0:
+                raise ValueError(f"Audio data is empty or invalid for {audio_path}")
+            # Compute MFCC
+            try:
+                mfcc = python_speech_features.mfcc(audio, sample_rate, numcep=13)
+            except Exception as e:
+                raise RuntimeError(f"MFCC extraction failed for {audio_path}: {e}")
             # Shape: [T, 13] -> [13, T] -> [1, 1, 13, T]
             mfcc_tensor = torch.FloatTensor(mfcc.T).unsqueeze(0).unsqueeze(0)  # [1, 1, 13, T]
-            
             # Clean up temp file
             if os.path.exists(audio_path):
-                os.remove(audio_path)
-                
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
             return mfcc_tensor
-            
         except Exception as e:
+            # Clean up temp file on error
+            if os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
             raise RuntimeError(f"Failed to extract audio from {video_path}: {e}")
     
     def _extract_video_frames(self, video_path, target_size=(112, 112)):
@@ -156,7 +160,9 @@ class VoxCeleb2Dataset(Dataset):
             offset: Ground truth offset (0 for positive, non-zero for negative)
             label: 1 if in sync, 0 if out of sync
         """
+        import time
         video_path = self.video_files[idx]
+        t0 = time.time()
         
         # Randomly decide if this should be positive (sync) or negative (out-of-sync)
         is_positive = random.random() > 0.5
@@ -168,14 +174,25 @@ class VoxCeleb2Dataset(Dataset):
             # Random offset between 1 and max_offset
             offset = random.randint(1, self.max_offset) * random.choice([-1, 1])
             label = 0
+        # Log offset/label distribution occasionally
+        if random.random() < 0.01:
+            print(f"[INFO][VoxCeleb2Dataset] idx={idx}, path={video_path}, offset={offset}, label={label}")
         
         try:
             # Extract audio MFCC features
+            t_audio0 = time.time()
             audio = self._extract_audio_mfcc(video_path)
-            
+            t_audio1 = time.time()
+            # Log audio tensor shape/dtype
+            if random.random() < 0.01:
+                print(f"[INFO][Audio] idx={idx}, path={video_path}, shape={audio.shape}, dtype={audio.dtype}, time={t_audio1-t_audio0:.2f}s")
             # Extract video frames
+            t_vid0 = time.time()
             video = self._extract_video_frames(video_path)
-            
+            t_vid1 = time.time()
+            # Log number of frames
+            if random.random() < 0.01:
+                print(f"[INFO][Video] idx={idx}, path={video_path}, frames={video.shape[2] if video.dim()==5 else 'ERR'}, shape={video.shape}, dtype={video.dtype}, time={t_vid1-t_vid0:.2f}s")
             # Apply temporal offset for negative samples
             if not is_positive and offset != 0:
                 if offset > 0:
@@ -184,31 +201,49 @@ class VoxCeleb2Dataset(Dataset):
                 else:
                     # Shift video backward (cut from end)
                     video = video[:, :, :offset, :, :]
-            
             # Crop/pad to fixed length
             video = self._crop_or_pad_video(video, self.video_length)
             audio = self._crop_or_pad_audio(audio, self.video_length * 4)
-            
             # Remove batch dimension (DataLoader will add it)
             # audio is [1, 1, 13, T], squeeze to [1, 13, T]
             audio = audio.squeeze(0)  # [1, 13, T]
             video = video.squeeze(0)  # [3, T, H, W]
-            
+            # Check for shape mismatches
+            if audio.shape[0] != 13:
+                raise ValueError(f"Audio MFCC shape mismatch: {audio.shape} for {video_path}")
+            if video.shape[0] != 3 or video.shape[2] != 112 or video.shape[3] != 112:
+                raise ValueError(f"Video frame shape mismatch: {video.shape} for {video_path}")
+            t1 = time.time()
+            if random.random() < 0.01:
+                print(f"[INFO][Sample] idx={idx}, path={video_path}, total_time={t1-t0:.2f}s")
+            dummy = False
         except Exception as e:
             # Fallback to dummy data if preprocessing fails
             # Only print occasionally to avoid spam
-            if random.random() < 0.01:  # Print 1% of errors
-                print(f"Warning: Failed to process {os.path.basename(video_path)}: {str(e)[:50]}")
+            import traceback
+            print(f"[WARN][VoxCeleb2Dataset] idx={idx}, path={video_path}, ERROR_STAGE=__getitem__, error={str(e)[:100]}")
+            traceback.print_exc(limit=1)
             audio = torch.randn(1, 13, self.video_length * 4)
             video = torch.randn(3, self.video_length, 112, 112)
             offset = 0
             label = 1
-        
+            dummy = True
+        # Resource cleanup: ensure no temp files left behind (audio)
+        temp_audio = os.path.join(self.temp_dir, f'{os.path.splitext(os.path.basename(video_path))[0]}_audio.wav')
+        if os.path.exists(temp_audio):
+            try:
+                os.remove(temp_audio)
+            except Exception:
+                pass
+        # Log dummy sample usage
+        if dummy and random.random() < 0.5:
+            print(f"[WARN][VoxCeleb2Dataset] idx={idx}, path={video_path}, DUMMY_SAMPLE_USED")
         return {
             'audio': audio,
             'video': video,
             'offset': torch.tensor(offset, dtype=torch.float32),
-            'label': torch.tensor(label, dtype=torch.float32)
+            'label': torch.tensor(label, dtype=torch.float32),
+            'dummy': dummy
         }
 
 
@@ -240,30 +275,44 @@ def train_epoch(model, dataloader, optimizer, criterion, device):
     correct = 0
     total = 0
     
+    import torch
+    import gc
     for batch_idx, batch in enumerate(dataloader):
         audio = batch['audio'].to(device)
         video = batch['video'].to(device)
         labels = batch['label'].to(device)
-        
+        # Log dummy data in batch
+        if 'dummy' in batch:
+            num_dummy = batch['dummy'].sum().item() if hasattr(batch['dummy'], 'sum') else int(sum(batch['dummy']))
+            if num_dummy > 0:
+                print(f"[WARN][train_epoch] Batch {batch_idx}: {num_dummy}/{len(labels)} dummy samples in batch!")
         # Forward pass
         optimizer.zero_grad()
         sync_probs, _, _ = model(audio, video)
-        
+        # Log tensor shapes
+        if batch_idx % 50 == 0:
+            print(f"[INFO][train_epoch] Batch {batch_idx}: audio {audio.shape}, video {video.shape}, sync_probs {sync_probs.shape}")
         # Compute loss
         loss = criterion(sync_probs, labels)
-        
         # Backward pass
         loss.backward()
         optimizer.step()
-        
         # Statistics
         total_loss += loss.item()
         pred = (sync_probs.max(dim=1)[0].max(dim=1)[0] > 0.5).float()
         correct += (pred == labels).sum().item()
         total += labels.size(0)
-        
+        # Log memory usage occasionally
+        if batch_idx % 100 == 0 and torch.cuda.is_available():
+            mem = torch.cuda.memory_allocated() / 1024**2
+            print(f"[INFO][train_epoch] Batch {batch_idx}: GPU memory used: {mem:.2f} MB")
         if batch_idx % 10 == 0:
             print(f'  Batch {batch_idx}/{len(dataloader)}, Loss: {loss.item():.4f}, Acc: {100*correct/total:.2f}%')
+        # Clean up
+        del audio, video, labels
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     avg_loss = total_loss / len(dataloader)
     accuracy = 100 * correct / total
