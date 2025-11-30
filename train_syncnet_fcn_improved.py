@@ -212,8 +212,19 @@ class VoxCeleb2DatasetImproved(Dataset):
                 # Validate shapes
                 if audio.shape[0] != 1 or audio.shape[1] != 13:
                     raise ValueError(f"Audio MFCC shape mismatch: {audio.shape}")
+                if audio.shape[2] != self.video_length * 4:
+                     # Force fix length if mismatch (should be handled by crop_or_pad but double check)
+                     audio = self._crop_or_pad_audio(audio.unsqueeze(0), self.video_length * 4).squeeze(0)
+                
                 if video.shape[0] != 3 or video.shape[2] != 112 or video.shape[3] != 112:
                     raise ValueError(f"Video frame shape mismatch: {video.shape}")
+                if video.shape[1] != self.video_length:
+                    # Force fix length
+                    video = self._crop_or_pad_video(video.unsqueeze(0), self.video_length).squeeze(0)
+
+                # Final check
+                if audio.shape != (1, 13, 100) or video.shape != (3, 25, 112, 112):
+                     raise ValueError(f"Final shape mismatch: Audio {audio.shape}, Video {video.shape}")
                 
                 return {
                     'audio': audio,
@@ -296,23 +307,23 @@ def compute_metrics(predicted_offsets, target_offsets, max_offset=125):
     # Root mean squared error
     rmse = torch.sqrt(((predicted_offsets_avg - target_offsets) ** 2).mean())
     
-    # ±1 frame tolerance (strict)
-    tolerance_1frame = (torch.abs(predicted_offsets_avg - target_offsets) <= 1).float().mean()
+    # Error buckets
+    acc_1frame = (torch.abs(predicted_offsets_avg - target_offsets) <= 1).float().mean()
+    acc_1sec = (torch.abs(predicted_offsets_avg - target_offsets) <= 25).float().mean()
     
-    # ±1 second tolerance (25 frames at 25fps) - more realistic for streaming
-    tolerance_1sec = (torch.abs(predicted_offsets_avg - target_offsets) <= 25).float().mean()
-    
-    # Sync detection accuracy (is offset close to 0?)
-    target_is_synced = (torch.abs(target_offsets) <= 5).float()  # Within 5 frames = synced
-    pred_is_synced = (torch.abs(predicted_offsets_avg) <= 5).float()
-    sync_acc = (target_is_synced == pred_is_synced).float().mean()
+    # Strict Sync Score (1 - error/25_frames)
+    # 1.0 = perfect sync
+    # 0.0 = >1 second error (unusable)
+    abs_error = torch.abs(predicted_offsets_avg - target_offsets)
+    sync_score = 1.0 - (abs_error / 25.0) # 25 frames = 1 second
+    sync_score = torch.clamp(sync_score, 0.0, 1.0).mean()
     
     return {
         'mae': mae.item(),
         'rmse': rmse.item(),
-        'tolerance_1frame': tolerance_1frame.item(),
-        'tolerance_1sec': tolerance_1sec.item(),
-        'sync_acc': sync_acc.item()
+        'acc_1frame': acc_1frame.item(),
+        'acc_1sec': acc_1sec.item(),
+        'sync_score': sync_score.item()
     }
 
 
@@ -323,7 +334,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch_num):
     total_offset_loss = 0
     total_consistency_loss = 0
     
-    metrics_accum = {'mae': 0, 'rmse': 0, 'tolerance_1frame': 0, 'tolerance_1sec': 0, 'sync_acc': 0}
+    metrics_accum = {'mae': 0, 'rmse': 0, 'acc_1frame': 0, 'acc_1sec': 0, 'sync_score': 0}
     num_batches = 0
     
     import gc
@@ -365,7 +376,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch_num):
             print(f'  Batch {batch_idx}/{len(dataloader)}, '
                   f'Loss: {loss.item():.4f}, '
                   f'MAE: {metrics["mae"]:.2f} frames, '
-                  f'±1s Acc: {metrics["tolerance_1sec"]*100:.1f}%')
+                  f'Score: {metrics["sync_score"]:.4f}')
         
         # Clean up
         del audio, video, offsets, predicted_offsets
@@ -397,6 +408,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default='checkpoints_improved', help='Output directory')
     parser.add_argument('--use_attention', action='store_true', help='Use attention model')
     parser.add_argument('--num_workers', type=int, default=2, help='DataLoader workers')
+    parser.add_argument('--max_offset', type=int, default=125, help='Max offset in frames (default: 125)')
+    parser.add_argument('--unfreeze_epoch', type=int, default=10, help='Epoch to unfreeze all layers (default: 10)')
     args = parser.parse_args()
     
     # Device
@@ -407,9 +420,9 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Create model with transfer learning (max_offset=125 for ±5 seconds)
-    print('Creating model...')
+    print(f'Creating model with max_offset={args.max_offset}...')
     model = StreamSyncFCN(
-        max_offset=125,  # ±5 seconds at 25fps
+        max_offset=args.max_offset,  # ±5 seconds at 25fps
         pretrained_syncnet_path=args.pretrained_model,
         auto_load_pretrained=True,
         use_attention=args.use_attention
@@ -428,8 +441,8 @@ def main():
     print(f'Model created. Pretrained conv layers loaded and frozen.')
     
     # Dataset and dataloader
-    print('Loading dataset...')
-    dataset = VoxCeleb2DatasetImproved(args.data_dir)
+    print(f'Loading dataset with max_offset={args.max_offset}...')
+    dataset = VoxCeleb2DatasetImproved(args.data_dir, max_offset=args.max_offset)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, 
                            num_workers=args.num_workers, pin_memory=True)
     
@@ -462,6 +475,25 @@ def main():
         print(f'\\nEpoch {epoch+1}/{start_epoch + args.epochs}')
         print('-'*80)
         
+        # Unfreeze layers if reached unfreeze_epoch
+        if epoch + 1 == args.unfreeze_epoch:
+            print(f'\\n🔓 Unfreezing all layers for fine-tuning at epoch {epoch+1}...')
+            model.unfreeze_all_layers()
+            
+            # Lower learning rate for fine-tuning
+            new_lr = args.lr * 0.1
+            print(f'📉 Lowering learning rate to {new_lr} for fine-tuning')
+            
+            # Re-initialize optimizer with all parameters
+            trainable_params = [p for p in model.parameters() if p.requires_grad]
+            optimizer = optim.Adam(trainable_params, lr=new_lr)
+            
+            # Re-initialize scheduler
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer, T_0=5, T_mult=2, eta_min=1e-8
+            )
+            print(f'Trainable parameters now: {sum(p.numel() for p in trainable_params):,}')
+        
         avg_loss, avg_offset_loss, avg_consistency_loss, metrics = train_epoch(
             model, dataloader, optimizer, criterion, device, epoch
         )
@@ -476,9 +508,9 @@ def main():
         print(f'  Consistency Loss: {avg_consistency_loss:.4f}')
         print(f'  MAE: {metrics["mae"]:.2f} frames ({metrics["mae"]/25:.3f} seconds)')
         print(f'  RMSE: {metrics["rmse"]:.2f} frames')
-        print(f'  ±1 Frame Accuracy: {metrics["tolerance_1frame"]*100:.2f}%')
-        print(f'  ±1 Second Accuracy: {metrics["tolerance_1sec"]*100:.2f}%')
-        print(f'  Sync Detection Acc: {metrics["sync_acc"]*100:.2f}%')
+        print(f'  Sync Score: {metrics["sync_score"]:.4f} (1.0=Perfect, 0.0=>1s Error)')
+        print(f'  <1 Frame Acc: {metrics["acc_1frame"]*100:.2f}%')
+        print(f'  <1 Second Acc: {metrics["acc_1sec"]*100:.2f}%')
         print(f'  Learning Rate: {current_lr:.2e}')
         
         # Save checkpoint
@@ -494,20 +526,20 @@ def main():
         }, checkpoint_path)
         print(f'  Checkpoint saved: {checkpoint_path}')
         
-        # Save best model based on ±1 second accuracy (more realistic for streaming)
-        if metrics['tolerance_1sec'] > best_tolerance_acc:
-            best_tolerance_acc = metrics['tolerance_1sec']
+        # Save best model based on Sync Score
+        if metrics['sync_score'] > best_tolerance_acc:
+            best_tolerance_acc = metrics['sync_score']
             best_path = os.path.join(args.output_dir, 'syncnet_fcn_best.pth')
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'metrics': metrics,
             }, best_path)
-            print(f'  ✓ New best model saved! (±1s Acc: {best_tolerance_acc*100:.2f}%)')
+            print(f'  ✓ New best model saved! (Score: {best_tolerance_acc:.4f})')
     
     print('\n' + '='*80)
     print('Training complete!')
-    print(f'Best ±1 second accuracy: {best_tolerance_acc*100:.2f}%')
+    print(f'Best Sync Score: {best_tolerance_acc:.4f}')
     print(f'Models saved to: {args.output_dir}')
 
 

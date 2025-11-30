@@ -352,6 +352,9 @@ class SyncNetFCN(nn.Module):
             video_features: [B, C, T_v] - video embeddings
         """
         # Extract features
+        if audio_mfcc.dim() == 3:
+            audio_mfcc = audio_mfcc.unsqueeze(1)  # [B, 1, F, T]
+            
         audio_features = self.audio_encoder(audio_mfcc)  # [B, C, T_a]
         video_features = self.video_encoder(video_frames)  # [B, C, T_v]
         
@@ -427,6 +430,9 @@ class SyncNetFCN_WithAttention(SyncNetFCN):
         Forward pass with attention mechanisms.
         """
         # Extract features
+        if audio_mfcc.dim() == 3:
+            audio_mfcc = audio_mfcc.unsqueeze(1)  # [B, 1, F, T]
+            
         audio_features = self.audio_encoder(audio_mfcc)  # [B, C, T_a]
         video_features = self.video_encoder(video_frames)  # [B, C, T_v]
         
@@ -459,12 +465,14 @@ class SyncNetFCN_WithAttention(SyncNetFCN):
         # Compute correlation
         correlation = self.correlation(video_features, audio_features)
         
-        # Predict sync probabilities
-        sync_logits = self.sync_predictor(correlation)
-        sync_logits = self.temporal_smoother(sync_logits)
-        sync_probs = F.softmax(sync_logits, dim=1)
+        # Predict offset (regression)
+        offset_logits = self.offset_regressor(correlation)
+        predicted_offsets = self.temporal_smoother(offset_logits)
         
-        return sync_probs, audio_features, video_features
+        # Clamp to valid range
+        predicted_offsets = torch.clamp(predicted_offsets, -self.max_offset, self.max_offset)
+        
+        return predicted_offsets, audio_features, video_features
 
 
 class StreamSyncFCN(nn.Module):
@@ -562,13 +570,19 @@ class StreamSyncFCN(nn.Module):
             if verbose:
                 print(f"✓ Loaded {loaded_count} pretrained conv parameters")
             
-            # Freeze conv layers
             if freeze_conv:
                 for name, param in self.fcn_model.named_parameters():
                     if 'conv_layers' in name:
                         param.requires_grad = False
                 if verbose:
                     print("✓ Froze pretrained conv layers")
+    
+    def unfreeze_all_layers(self, verbose=True):
+        """Unfreeze all layers for fine-tuning."""
+        for param in self.fcn_model.parameters():
+            param.requires_grad = True
+        if verbose:
+            print("✓ Unfrozen all layers for fine-tuning")
                     
         except Exception as e:
             if verbose:
