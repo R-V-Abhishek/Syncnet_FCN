@@ -576,6 +576,10 @@ class StreamSyncFCN(nn.Module):
                         param.requires_grad = False
                 if verbose:
                     print("✓ Froze pretrained conv layers")
+        
+        except Exception as e:
+            if verbose:
+                print(f"⚠ Could not load pretrained weights: {e}")
     
     def unfreeze_all_layers(self, verbose=True):
         """Unfreeze all layers for fine-tuning."""
@@ -583,10 +587,6 @@ class StreamSyncFCN(nn.Module):
             param.requires_grad = True
         if verbose:
             print("✓ Unfrozen all layers for fine-tuning")
-                    
-        except Exception as e:
-            if verbose:
-                print(f"⚠ Could not load pretrained weights: {e}")
     
     def forward(self, audio_mfcc, video_frames):
         """Forward pass through FCN model."""
