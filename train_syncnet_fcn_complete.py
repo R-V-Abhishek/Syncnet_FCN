@@ -66,8 +66,9 @@ class VoxCeleb2Dataset(Dataset):
             sample_rate, audio = wavfile.read(audio_path)
             mfcc = python_speech_features.mfcc(audio, sample_rate, numcep=13)
             
-            # Transpose to [13, T] and add batch dimension [1, 13, T]
-            mfcc_tensor = torch.FloatTensor(mfcc.T).unsqueeze(0)
+            # Shape: [T, 13] -> [13, T] -> [1, 13, T]
+            # Need to add channel dimension: [1, 13, T] -> [1, 1, 13, T] for model
+            mfcc_tensor = torch.FloatTensor(mfcc.T).unsqueeze(0).unsqueeze(0)  # [1, 1, 13, T]
             
             # Clean up temp file
             if os.path.exists(audio_path):
@@ -177,6 +178,7 @@ class VoxCeleb2Dataset(Dataset):
             audio = self._crop_or_pad_audio(audio, self.video_length * 4)
             
             # Remove batch dimension (DataLoader will add it)
+            # audio is [1, 1, 13, T], squeeze to [1, 13, T]
             audio = audio.squeeze(0)  # [1, 13, T]
             video = video.squeeze(0)  # [3, T, H, W]
             
