@@ -49,21 +49,27 @@ def get_model(window_size=25, stride=5, buffer_size=100, use_attention=False):
     """Get or create model instance."""
     global _model
     
-    # For simplicity, recreate model with new parameters each time
-    # In production, you might want to cache this
+    # Load FCN model with trained checkpoint
     from SyncNetModel_FCN import StreamSyncFCN
+    import torch
     
-    pretrained_path = 'data/syncnet_v2.model' if os.path.exists('data/syncnet_v2.model') else None
+    checkpoint_path = 'checkpoints/syncnet_fcn_epoch2.pth'
     
     model = StreamSyncFCN(
-        window_size=window_size,
-        stride=stride,
-        buffer_size=buffer_size,
-        use_attention=use_attention,
-        pretrained_syncnet_path=pretrained_path,
-        auto_load_pretrained=bool(pretrained_path)
+        max_offset=15,
+        pretrained_syncnet_path=None,
+        auto_load_pretrained=False
     )
     
+    # Load trained weights
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        encoder_state = {k: v for k, v in checkpoint['model_state_dict'].items()
+                        if 'audio_encoder' in k or 'video_encoder' in k}
+        model.load_state_dict(encoder_state, strict=False)
+        print(f"✓ Loaded FCN model (epoch {checkpoint.get('epoch', '?')})")
+    
+    model.eval()
     return model
 
 
@@ -147,27 +153,25 @@ def api_analyze():
             buffer_size=buffer_size
         )
         
-        # Process video
-        result = model.process_video_file(
+        # Process video using calibrated method
+        offset, confidence, raw_offset = model.detect_offset_correlation(
             video_path=temp_video_path,
-            return_trace=False,
+            calibration_offset=3,
+            calibration_scale=-0.5,
+            calibration_baseline=-15,
             temp_dir=temp_dir,
-            target_size=(112, 112),
             verbose=False
         )
         
-        if result is None:
-            return jsonify({'error': 'Failed to process video. Check if video has audio track.'}), 400
-        
-        offset, confidence = result
         processing_time = time.time() - start_time
         
         return jsonify({
             'success': True,
             'video_name': filename,
-            'offset_frames': float(offset),
+            'offset_frames': int(offset),
             'offset_seconds': float(offset / 25.0),
             'confidence': float(confidence),
+            'raw_offset': int(raw_offset),
             'processing_time': float(processing_time),
             'settings': {
                 'window_size': window_size,
