@@ -67,7 +67,7 @@ class AVSyncDataset(Dataset):
         
         # Find all video files
         self.video_files = []
-        for ext in ['*.mp4', '*.avi', '*.mov', '*.mkv']:
+        for ext in ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.mpg', '*.mpeg']:
             self.video_files.extend(Path(video_dir).glob(f'**/{ext}'))
         
         if not self.video_files:
@@ -322,9 +322,9 @@ def main():
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
     
-    # Training parameters (defaults optimized for A5000 24GB, VoxCeleb2 overnight)
-    parser.add_argument('--epochs', type=int, default=10,
-                       help='10 epochs for VoxCeleb2 overnight (~8-10 hrs)')
+    # Training parameters (defaults optimized for RTX A5000 24GB, GRID corpus)
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='50 epochs for GRID corpus (~5-6 hrs on A5000)')
     parser.add_argument('--batch_size', type=int, default=64,
                        help='64 fits in A5000 24GB, faster throughput')
     parser.add_argument('--lr', type=float, default=5e-4,
@@ -335,21 +335,21 @@ def main():
                        help='Slightly lower dropout for classification')
     
     # Model parameters
-    parser.add_argument('--max_offset', type=int, default=125,
-                       help='±125 frames = ±5 seconds at 25fps (251 classes)')
+    parser.add_argument('--max_offset', type=int, default=15,
+                       help='±15 frames for GRID corpus (31 classes)')
     parser.add_argument('--embedding_dim', type=int, default=512)
     parser.add_argument('--num_frames', type=int, default=25)
-    parser.add_argument('--samples_per_video', type=int, default=2,
-                       help='2 samples/video for VoxCeleb2 (large dataset)')
-    parser.add_argument('--num_workers', type=int, default=0,
-                       help='Data loading workers (0 for Windows compatibility)')
+    parser.add_argument('--samples_per_video', type=int, default=5,
+                       help='5 samples/video for GRID corpus')
+    parser.add_argument('--num_workers', type=int, default=4,
+                       help='Data loading workers (4 for RTX A5000 system)')
     
     # Training options
     parser.add_argument('--freeze_conv', action='store_true', default=True,
                        help='Freeze pretrained conv layers')
     parser.add_argument('--no_freeze_conv', dest='freeze_conv', action='store_false')
-    parser.add_argument('--unfreeze_epoch', type=int, default=10,
-                       help='Epoch to unfreeze conv layers')
+    parser.add_argument('--unfreeze_epoch', type=int, default=20,
+                       help='Epoch to unfreeze conv layers for fine-tuning')
     
     args = parser.parse_args()
     
