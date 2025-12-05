@@ -5,3 +5,5 @@ scipy>=1.2.1
 scenedetect==0.5.1
 opencv-contrib-python
 python_speech_features
+flask>=2.0.0
+werkzeug>=2.0.0

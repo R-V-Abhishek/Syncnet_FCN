@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SyncNet FCN - Audio Video Sync Detector</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 6v6l4 2"/>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <h1>SyncNet FCN</h1>
+                    <span>Audio-Video Sync Detector</span>
+                </div>
+            </div>
+            <div class="header-status">
+                <span class="status-dot"></span>
+                <span id="modelStatus">Model Ready</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Upload Section -->
+            <section class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <div class="upload-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                        </div>
+                        <h2>Drop your video here</h2>
+                        <p>or click to browse</p>
+                        <span class="upload-formats">MP4, AVI, MOV, MKV</span>
+                    </div>
+                    <input type="file" id="fileInput" accept="video/*" hidden>
+                </div>
+
+                <!-- Selected File Info -->
+                <div class="file-info hidden" id="fileInfo">
+                    <div class="file-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <polygon points="23 7 16 12 23 17 23 7"/>
+                            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                        </svg>
+                    </div>
+                    <div class="file-details">
+                        <span class="file-name" id="fileName">video.mp4</span>
+                        <span class="file-size" id="fileSize">0 MB</span>
+                    </div>
+                    <button class="btn-remove" id="removeFile" title="Remove file">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Settings Panel -->
+                <div class="settings-panel">
+                    <div class="settings-header" id="settingsToggle">
+                        <span>Settings</span>
+                        <svg class="settings-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"/>
+                        </svg>
+                    </div>
+                    <div class="settings-content hidden" id="settingsContent">
+                        <div class="setting-row">
+                            <label for="windowSize">Window Size</label>
+                            <input type="number" id="windowSize" value="25" min="5" max="100">
+                            <span class="setting-unit">frames</span>
+                        </div>
+                        <div class="setting-row">
+                            <label for="stride">Stride</label>
+                            <input type="number" id="stride" value="5" min="1" max="50">
+                            <span class="setting-unit">frames</span>
+                        </div>
+                        <div class="setting-row">
+                            <label for="bufferSize">Buffer Size</label>
+                            <input type="number" id="bufferSize" value="100" min="10" max="500">
+                            <span class="setting-unit">windows</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analyze Button -->
+                <button class="btn-analyze" id="analyzeBtn" disabled>
+                    <span class="btn-text">Analyze Video</span>
+                    <span class="btn-loader hidden">
+                        <svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                        </svg>
+                        Processing...
+                    </span>
+                </button>
+            </section>
+
+            <!-- Results Section -->
+            <section class="results-section hidden" id="resultsSection">
+                <div class="results-header">
+                    <h2>Analysis Results</h2>
+                    <div class="sync-badge" id="syncBadge">
+                        <span class="badge-icon"></span>
+                        <span class="badge-text">Checking...</span>
+                    </div>
+                </div>
+
+                <div class="results-grid">
+                    <!-- Offset Card -->
+                    <div class="result-card">
+                        <div class="card-label">Offset</div>
+                        <div class="card-value">
+                            <span id="offsetFrames">--</span>
+                            <span class="card-unit">frames</span>
+                        </div>
+                        <div class="card-secondary" id="offsetSeconds">-- seconds</div>
+                    </div>
+
+                    <!-- Confidence Card -->
+                    <div class="result-card">
+                        <div class="card-label">Confidence</div>
+                        <div class="card-value">
+                            <span id="confidenceValue">--</span>
+                            <span class="card-unit">%</span>
+                        </div>
+                        <div class="confidence-bar">
+                            <div class="confidence-fill" id="confidenceFill" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Processing Time Card -->
+                    <div class="result-card">
+                        <div class="card-label">Processing Time</div>
+                        <div class="card-value">
+                            <span id="processingTime">--</span>
+                            <span class="card-unit">sec</span>
+                        </div>
+                        <div class="card-secondary" id="videoName">--</div>
+                    </div>
+                </div>
+
+                <!-- Interpretation -->
+                <div class="interpretation-box" id="interpretationBox">
+                    <div class="interpretation-icon" id="interpretationIcon"></div>
+                    <div class="interpretation-text" id="interpretationText">
+                        Analyzing your video...
+                    </div>
+                </div>
+
+                <!-- Fix Suggestion -->
+                <div class="fix-suggestion hidden" id="fixSuggestion">
+                    <div class="fix-label">To Fix:</div>
+                    <div class="fix-text" id="fixText"></div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <span>FCN-SyncNet • Built with PyTorch</span>
+            <span>R-V-Abhishek</span>
+        </footer>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal hidden" id="errorModal">
+        <div class="modal-content">
+            <div class="modal-icon error">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+            </div>
+            <h3 id="errorTitle">Error</h3>
+            <p id="errorMessage">Something went wrong</p>
+            <button class="btn-modal" id="closeModal">Got it</button>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
