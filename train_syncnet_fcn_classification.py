@@ -209,18 +209,26 @@ class AVSyncDataset(Dataset):
 
 
 def collate_fn_skip_none(batch):
-    """Custom collate function that skips None samples."""
+    """Custom collate function that skips None and invalid samples."""
     # Filter out None samples
     batch = [b for b in batch if b is not None]
     
-    if len(batch) == 0:
-        # Return empty batch if all samples are bad
+    # Filter out samples with empty tensors (0-length MFCC from videos without audio)
+    valid_batch = []
+    for b in batch:
+        audio, video, offset = b
+        # Check if audio and video have valid sizes
+        if audio.size(-1) > 0 and video.size(1) > 0:
+            valid_batch.append(b)
+    
+    if len(valid_batch) == 0:
+        # Return None if all samples are bad
         return None
     
     # Stack valid samples
-    audio = torch.stack([b[0] for b in batch])
-    video = torch.stack([b[1] for b in batch])
-    offset = torch.stack([b[2] for b in batch])
+    audio = torch.stack([b[0] for b in valid_batch])
+    video = torch.stack([b[1] for b in valid_batch])
+    offset = torch.stack([b[2] for b in valid_batch])
     
     return audio, video, offset
 
