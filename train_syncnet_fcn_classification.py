@@ -331,8 +331,8 @@ def main():
                        help='Path to checkpoint to resume from')
     
     # Training parameters (defaults optimized for RTX A5000 24GB, GRID corpus)
-    parser.add_argument('--epochs', type=int, default=50,
-                       help='50 epochs for GRID corpus (~5-6 hrs on A5000)')
+    parser.add_argument('--epochs', type=int, default=25,
+                       help='25 epochs for GRID corpus (~2.5-3 hrs on A5000)')
     parser.add_argument('--batch_size', type=int, default=64,
                        help='64 fits in A5000 24GB, faster throughput')
     parser.add_argument('--lr', type=float, default=5e-4,
