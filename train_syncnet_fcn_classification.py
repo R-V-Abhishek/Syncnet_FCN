@@ -18,6 +18,7 @@ import os
 import sys
 import argparse
 import time
+import gc
 import numpy as np
 import torch
 import torch.nn as nn
@@ -234,47 +235,77 @@ def collate_fn_skip_none(batch):
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device, max_offset):
-    """Train for one epoch."""
+    """Train for one epoch with bulletproof error handling."""
     model.train()
     total_loss = 0
     total_correct = 0
     total_samples = 0
+    skipped_batches = 0
     
     for batch_idx, batch in enumerate(dataloader):
-        # Skip None batches (all samples were invalid)
-        if batch is None:
+        try:
+            # Skip None batches (all samples were invalid)
+            if batch is None:
+                skipped_batches += 1
+                continue
+            
+            audio, video, target_offset = batch
+            audio = audio.to(device)
+            video = video.to(device)
+            target_class = (target_offset + max_offset).long().to(device)
+            
+            optimizer.zero_grad()
+            
+            # Forward pass
+            if hasattr(model, 'fcn_model'):
+                class_logits, _, _ = model(audio, video)
+            else:
+                class_logits, _, _ = model(audio, video)
+            
+            # Compute loss
+            loss = criterion(class_logits, target_class)
+            
+            # Backward pass
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            
+            # Track metrics
+            total_loss += loss.item() * audio.size(0)
+            predicted_class = class_logits.argmax(dim=1)
+            total_correct += (predicted_class == target_class).sum().item()
+            total_samples += audio.size(0)
+            
+            if batch_idx % 10 == 0:
+                print(f"  Batch {batch_idx}/{len(dataloader)}: Loss={loss.item():.4f}, "
+                      f"Acc={(predicted_class == target_class).float().mean().item():.2%}")
+            
+            # Memory cleanup every 50 batches
+            if batch_idx % 50 == 0 and batch_idx > 0:
+                del audio, video, target_offset, target_class, class_logits, loss
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                gc.collect()
+                
+        except RuntimeError as e:
+            # Handle OOM or other runtime errors gracefully
+            print(f"  [WARNING] Batch {batch_idx} failed: {str(e)[:100]}")
+            skipped_batches += 1
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            gc.collect()
             continue
-        
-        audio, video, target_offset = batch
-        audio = audio.to(device)
-        video = video.to(device)
-        target_class = (target_offset + max_offset).long().to(device)
-        
-        optimizer.zero_grad()
-        
-        # Forward pass
-        if hasattr(model, 'fcn_model'):
-            class_logits, _, _ = model(audio, video)
-        else:
-            class_logits, _, _ = model(audio, video)
-        
-        # Compute loss
-        loss = criterion(class_logits, target_class)
-        
-        # Backward pass
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        
-        # Track metrics
-        total_loss += loss.item() * audio.size(0)
-        predicted_class = class_logits.argmax(dim=1)
-        total_correct += (predicted_class == target_class).sum().item()
-        total_samples += audio.size(0)
-        
-        if batch_idx % 10 == 0:
-            print(f"  Batch {batch_idx}/{len(dataloader)}: Loss={loss.item():.4f}, "
-                  f"Acc={(predicted_class == target_class).float().mean().item():.2%}")
+        except Exception as e:
+            # Handle any other errors
+            print(f"  [WARNING] Batch {batch_idx} error: {str(e)[:100]}")
+            skipped_batches += 1
+            continue
+    
+    if skipped_batches > 0:
+        print(f"  [INFO] Skipped {skipped_batches} batches due to errors")
+    
+    if total_samples == 0:
+        return 0.0, 0.0
     
     return total_loss / total_samples, total_correct / total_samples
 
@@ -330,13 +361,13 @@ def main():
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
     
-    # Training parameters (defaults optimized for RTX A5000 24GB, GRID corpus)
+    # Training parameters (BULLETPROOF config for 4-5 hour training)
     parser.add_argument('--epochs', type=int, default=25,
-                       help='25 epochs for GRID corpus (~2.5-3 hrs on A5000)')
-    parser.add_argument('--batch_size', type=int, default=64,
-                       help='64 fits in A5000 24GB, faster throughput')
+                       help='25 epochs for high accuracy (~4-5 hrs)')
+    parser.add_argument('--batch_size', type=int, default=32,
+                       help='32 for memory safety')
     parser.add_argument('--lr', type=float, default=5e-4,
-                       help='Higher LR for faster convergence with large dataset')
+                       help='Balanced LR for stable training')
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--label_smoothing', type=float, default=0.1)
     parser.add_argument('--dropout', type=float, default=0.2,
@@ -347,10 +378,12 @@ def main():
                        help='±15 frames for GRID corpus (31 classes)')
     parser.add_argument('--embedding_dim', type=int, default=512)
     parser.add_argument('--num_frames', type=int, default=25)
-    parser.add_argument('--samples_per_video', type=int, default=5,
-                       help='5 samples/video for GRID corpus')
-    parser.add_argument('--num_workers', type=int, default=4,
-                       help='Data loading workers (4 for RTX A5000 system)')
+    parser.add_argument('--samples_per_video', type=int, default=3,
+                       help='3 samples/video for good data augmentation')
+    parser.add_argument('--num_workers', type=int, default=0,
+                       help='0 workers for memory safety (no multiprocessing)')
+    parser.add_argument('--cache_features', action='store_true',
+                       help='Enable feature caching (uses more RAM but faster)')
     
     # Training options
     parser.add_argument('--freeze_conv', action='store_true', default=True,
@@ -382,14 +415,16 @@ def main():
     
     model = model.to(device)
     
-    # Create dataset
+    # Create dataset (caching DISABLED by default for memory safety)
     print("Loading dataset...")
+    cache_enabled = args.cache_features  # Default: False
+    print(f"Feature caching: {'ENABLED (faster but uses RAM)' if cache_enabled else 'DISABLED (memory safe)'}")
     train_dataset = AVSyncDataset(
         video_dir=args.data_dir,
         max_offset=args.max_offset,
         num_samples_per_video=args.samples_per_video,
         num_frames=args.num_frames,
-        cache_features=True
+        cache_features=cache_enabled
     )
     
     train_loader = DataLoader(
@@ -398,7 +433,7 @@ def main():
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True if device.type == 'cuda' else False,
-        persistent_workers=True if args.num_workers > 0 else False,
+        persistent_workers=False,  # Disabled for memory safety
         collate_fn=collate_fn_skip_none
     )
     
@@ -407,9 +442,9 @@ def main():
         val_dataset = AVSyncDataset(
             video_dir=args.val_dir,
             max_offset=args.max_offset,
-            num_samples_per_video=5,
+            num_samples_per_video=2,
             num_frames=args.num_frames,
-            cache_features=True
+            cache_features=cache_enabled
         )
         val_loader = DataLoader(
             val_dataset,
@@ -417,7 +452,7 @@ def main():
             shuffle=False,
             num_workers=args.num_workers,
             pin_memory=True if device.type == 'cuda' else False,
-            persistent_workers=True if args.num_workers > 0 else False,
+            persistent_workers=False,  # Disabled for memory safety
             collate_fn=collate_fn_skip_none
         )
     
