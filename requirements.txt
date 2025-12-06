@@ -1,13 +1,27 @@
-Flask==3.0.0
-gunicorn==21.2.0
-torch==2.1.0
-torchvision==0.16.0
-opencv-python-headless==4.8.1.78
-numpy==1.24.3
-scipy==1.11.3
-librosa==0.10.1
-soundfile==0.12.1
-imageio==2.31.5
-imageio-ffmpeg==0.4.9
-Pillow==10.1.0
-requests==2.31.0
+# Core ML/DL frameworks
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.24.3
+
+# Computer vision
+opencv-python>=4.8.0
+
+# Audio processing
+scipy>=1.11.0
+python-speech-features>=0.6
+soundfile>=0.12.1
+librosa>=0.10.1
+
+# Video processing
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+scenedetect[opencv]>=0.6.0
+
+# Web framework (for app.py)
+Flask>=3.0.0
+Werkzeug>=3.0.0
+gunicorn>=21.2.0
+
+# Utilities
+Pillow>=10.1.0
+requests>=2.31.0
